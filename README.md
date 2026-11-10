@@ -1,7 +1,7 @@
 # Reset-Launcher
-Um Launcher de minecraft Horizon (minecraft reescrito em rust) 100% brasileiro e feito por um desenvolvedor solo
+Um Launcher de minecraft java (minecraft reescrito em rust) 100% brasileiro e feito por um desenvolvedor solo
 
-O Reset Launcher foi pensado em uma forma alternativa ao horizon launcher, apresentando mais funcionalidades (como o modo offline) e sendo leve e compativel para diversas versoes do windows (foi testado do windows 10 ao 7).
+O Reset Launcher foi pensado em uma forma alternativa ao horizon launcher, apresentando diferentes funcionalidades (como o modo offline) e sendo leve e compativel para diversas versões do windows (foi testado do windows 10 ao 7). o launcher utiliza parte do codigo do horizon launcher para rodar o minecraft reescrito em Rust.
 
 # Funções: 
 
