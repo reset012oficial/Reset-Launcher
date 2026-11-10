@@ -1,3 +1,4 @@
+<img width="256" height="256" alt="reset launcher icone" src="https://github.com/user-attachments/assets/9b6f4478-903c-4a8f-b846-7f54c4b3c337" />
 # Reset-Launcher
 Um launcher de Minecraft Java (Minecraft reescrito em Rust) 100% brasileiro e feito por um desenvolvedor solo.
 
