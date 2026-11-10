@@ -1,0 +1,38 @@
+# Rust
+target/
+**/*.rs.bk
+# Cargo.lock is kept for binary applications
+
+# Distribution
+dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Environment
+.env
+.env.local
+
+# Backup files
+*.bak
+*~
