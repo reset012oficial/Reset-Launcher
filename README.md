@@ -11,7 +11,7 @@ O launcher apresenta uma area dedicada a mods, resource-packs e shaders que cont
 
 O launcher possui um sistema de skins personalizadas em que o jogador mesmo no modo offline poderá trocar sua skin, assim permitindo que ele não precise utilizar as skins padrão do jogo.
 
-Ele tambem possui uma area de configuração que lá o usuario poderá selecionar a lingua do launcher, quantidade de memoria ram, o tamanho da janela, distancia de renderização, configurações de mundo e outras coisas.
+Ele tambem possui uma area de configuração que lá o usuario poderá selecionar a linguagem do launcher (possui ingles e portugues), quantidade de memoria ram, o tamanho da janela, distancia de renderização, configurações de mundo e outras coisas.
 
 
 # Requisitos do Sistema:
