@@ -31,14 +31,79 @@ fn clone_horizon_repo(
     let output = Command::new("git")
         .args(["clone", "--depth", "1", HORIZON_REPO_URL, target_dir.to_str().unwrap()])
         .output()
-        .map_err(|e| format!("Falha ao executar git clone: {}", e))?;
+        .map_err(|e| {
+            let err = format!("Falha ao executar git clone: {}", e);
+            send_progress(&tx, -1.0, &err);
+            err
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Falha ao clonar repositório: {}", stderr));
+        let err = format!("Falha ao clonar repositório: {}", stderr);
+        send_progress(&tx, -1.0, &err);
+        return Err(err);
     }
 
     send_progress(&tx, 1.0, "Repositório Horizon clonado com sucesso!");
+    Ok(())
+}
+
+/// Update the Horizon/Reset repository
+fn update_horizon_repo(
+    target_dir: &std::path::Path,
+    tx: mpsc::Sender<DownloadProgress>,
+) -> Result<(), String> {
+    // Helper to send progress updates
+    let send_progress = |tx: &mpsc::Sender<DownloadProgress>, progress: f32, status: &str| {
+        let _ = tx.send(DownloadProgress {
+            progress,
+            status: status.to_string(),
+            bytes_downloaded: 0,
+            total_bytes: 0,
+        });
+    };
+
+    send_progress(&tx, 0.1, "Verificando atualizações...");
+
+    // Fetch latest changes
+    let output = Command::new("git")
+        .args(["fetch", "origin"])
+        .current_dir(target_dir)
+        .output()
+        .map_err(|e| {
+            let err = format!("Falha ao executar git fetch: {}", e);
+            send_progress(&tx, -1.0, &err);
+            err
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let err = format!("Falha ao buscar atualizações: {}", stderr);
+        send_progress(&tx, -1.0, &err);
+        return Err(err);
+    }
+
+    send_progress(&tx, 0.5, "Atualizando repositório...");
+
+    // Pull latest changes
+    let output = Command::new("git")
+        .args(["pull", "origin", "main"])
+        .current_dir(target_dir)
+        .output()
+        .map_err(|e| {
+            let err = format!("Falha ao executar git pull: {}", e);
+            send_progress(&tx, -1.0, &err);
+            err
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let err = format!("Falha ao atualizar repositório: {}", stderr);
+        send_progress(&tx, -1.0, &err);
+        return Err(err);
+    }
+
+    send_progress(&tx, 1.0, "Repositório Horizon atualizado com sucesso!");
     Ok(())
 }
 
@@ -188,6 +253,14 @@ pub struct HomeTab {
     clone_status: String,
     /// Channel receiver for clone progress updates
     clone_receiver: Option<mpsc::Receiver<DownloadProgress>>,
+    /// Whether we're updating Horizon repo
+    updating_horizon: bool,
+    /// Update progress (0.0 to 1.0)
+    update_progress: f32,
+    /// Update progress message
+    update_status: String,
+    /// Channel receiver for update progress updates
+    update_receiver: Option<mpsc::Receiver<DownloadProgress>>,
 }
 
 /// Download progress update from background thread
@@ -225,6 +298,10 @@ impl HomeTab {
             clone_progress: 0.0,
             clone_status: String::new(),
             clone_receiver: None,
+            updating_horizon: false,
+            update_progress: 0.0,
+            update_status: String::new(),
+            update_receiver: None,
         }
     }
 
@@ -527,28 +604,57 @@ impl HomeTab {
             ui.add_space(10.0);
             if let Some(path) = &self.server_jar_path {
                 ui.label(egui::RichText::new(path.display().to_string()).size(11.0).color(ICON_COLOR));
-            } else if !can_download_server && !self.downloading_server && !self.cloning_horizon {
-                // Offer to clone Horizon repo automatically
-                if secondary_button(ui, self.tr(config, "Clone Horizon Repo (auto)", "Clonar Repositório Horizon (auto)"), true) {
-                    let game_dir = resolved_game_dir.clone();
-                    let (tx, rx) = mpsc::channel();
-                    self.clone_receiver = Some(rx);
-                    self.cloning_horizon = true;
-                    self.clone_progress = 0.0;
-                    self.clone_status = "Preparando para clonar...".to_string();
-                    self.server_jar_error = None;
-                    std::thread::spawn(move || {
-                        if let Some(game_dir) = game_dir {
-                            let target_dir = game_dir.join("horizon");
-                            let result = clone_horizon_repo(&target_dir, tx);
-                            if let Err(e) = result {
-                                eprintln!("Clone failed: {}", e);
+            } else if !can_download_server && !self.downloading_server && !self.cloning_horizon && !self.updating_horizon {
+                // Check if horizon directory already exists in game directory
+                let horizon_exists = resolved_game_dir.as_ref()
+                    .map(|dir| dir.join("horizon").exists())
+                    .unwrap_or(false);
+
+                if horizon_exists {
+                    // Offer to update Horizon repo
+                    if secondary_button(ui, self.tr(config, "Update Horizon (optional)", "Atualizar Horizon (opcional)"), true) {
+                        let game_dir = resolved_game_dir.clone();
+                        let (tx, rx) = mpsc::channel();
+                        self.update_receiver = Some(rx);
+                        self.updating_horizon = true;
+                        self.update_progress = 0.0;
+                        self.update_status = "Verificando atualizações...".to_string();
+                        self.server_jar_error = None;
+                        std::thread::spawn(move || {
+                            if let Some(game_dir) = game_dir {
+                                let target_dir = game_dir.join("horizon");
+                                let result = update_horizon_repo(&target_dir, tx);
+                                if let Err(e) = result {
+                                    eprintln!("Update failed: {}", e);
+                                }
                             }
-                        }
-                    });
+                        });
+                    }
+                    ui.add_space(10.0);
+                    ui.label(egui::RichText::new(self.tr(config, "or set Reset path in Settings", "ou configure o caminho do Reset nas Configurações")).size(11.0).color(ICON_COLOR));
+                } else {
+                    // Offer to clone Horizon repo automatically
+                    if secondary_button(ui, self.tr(config, "Clone Horizon Repo (auto)", "Clonar Repositório Horizon (auto)"), true) {
+                        let game_dir = resolved_game_dir.clone();
+                        let (tx, rx) = mpsc::channel();
+                        self.clone_receiver = Some(rx);
+                        self.cloning_horizon = true;
+                        self.clone_progress = 0.0;
+                        self.clone_status = "Preparando para clonar...".to_string();
+                        self.server_jar_error = None;
+                        std::thread::spawn(move || {
+                            if let Some(game_dir) = game_dir {
+                                let target_dir = game_dir.join("horizon");
+                                let result = clone_horizon_repo(&target_dir, tx);
+                                if let Err(e) = result {
+                                    eprintln!("Clone failed: {}", e);
+                                }
+                            }
+                        });
+                    }
+                    ui.add_space(10.0);
+                    ui.label(egui::RichText::new(self.tr(config, "or set Reset path in Settings", "ou configure o caminho do Reset nas Configurações")).size(11.0).color(ICON_COLOR));
                 }
-                ui.add_space(10.0);
-                ui.label(egui::RichText::new(self.tr(config, "or set Reset path in Settings", "ou configure o caminho do Reset nas Configurações")).size(11.0).color(ICON_COLOR));
             }
         });
 
@@ -666,6 +772,43 @@ impl HomeTab {
             }
         }
 
+        // Poll for update progress updates from background thread
+        if self.updating_horizon {
+            // Take the receiver to avoid borrow checker issues
+            if let Some(rx) = self.update_receiver.take() {
+                let mut still_updating = true;
+                while let Ok(progress) = rx.try_recv() {
+                    self.update_progress = progress.progress;
+                    self.update_status = progress.status.clone();
+
+                    // Check if update completed or failed
+                    if progress.progress >= 1.0 {
+                        self.updating_horizon = false;
+                        still_updating = false;
+                        // If successful, update config with the updated path
+                        if progress.progress > 0.0 {
+                            if let Some(game_dir) = resolved_game_dir {
+                                let updated_path = game_dir.join("horizon");
+                                if updated_path.exists() {
+                                    config.reset_path = Some(updated_path);
+                                    self.server_jar_path = None; // Reset so download button can appear
+                                }
+                            }
+                        }
+                    } else if progress.progress < 0.0 {
+                        // Error occurred
+                        self.updating_horizon = false;
+                        still_updating = false;
+                        self.server_jar_error = Some(progress.status);
+                    }
+                }
+                // Put the receiver back if still updating
+                if still_updating {
+                    self.update_receiver = Some(rx);
+                }
+            }
+        }
+
         // Download progress with progress bar
         if self.downloading_server || self.download_progress > 0.0 {
             ui.add_space(6.0);
@@ -745,6 +888,28 @@ impl HomeTab {
                     ui.add_space(6.0);
                 }
                 ui.label(egui::RichText::new(&self.clone_status).size(11.0).color(ICON_COLOR));
+            });
+        }
+
+        // Update progress with progress bar
+        if self.updating_horizon || self.update_progress > 0.0 {
+            ui.add_space(6.0);
+
+            // Progress bar
+            let progress_percent = (self.update_progress * 100.0) as u32;
+            ui.add(egui::ProgressBar::new(self.update_progress)
+                .text(format!("{}%", progress_percent))
+                .animate(self.updating_horizon)
+                .desired_width(ui.available_width()));
+
+            // Status text
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if self.updating_horizon {
+                    ui.spinner();
+                    ui.add_space(6.0);
+                }
+                ui.label(egui::RichText::new(&self.update_status).size(11.0).color(ICON_COLOR));
             });
         }
 
