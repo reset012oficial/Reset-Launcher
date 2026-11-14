@@ -7,18 +7,28 @@ use crate::gui::theme::*;
 use crate::gui::tabs::{section_header, primary_button, secondary_button};
 use crate::gui::app::LaunchStatus;
 
-/// Horizon repository URL
-const HORIZON_REPO_URL: &str = "https://github.com/horizon-rust/horizon.git";
-const HORIZON_REPO_DIR: &str = "horizon";
-
 /// GitHub repository for pre-compiled reset-client binaries
 const RESET_CLIENT_REPO: &str = "reset012oficial/reset-client-binaries";
 
-/// Download the pre-compiled reset-client binary from GitHub releases
-fn download_reset_client(config: &crate::gui::app::LauncherConfig) -> Result<(), String> {
+/// Download the pre-compiled reset-client binary from GitHub releases with progress reporting
+fn download_reset_client(
+    config: &crate::gui::app::LauncherConfig,
+    tx: mpsc::Sender<DownloadProgress>,
+) -> Result<(), String> {
     let client = reqwest::blocking::Client::new();
 
-    // Get the latest release from GitHub
+    // Helper to send progress updates
+    let send_progress = |tx: &mpsc::Sender<DownloadProgress>, progress: f32, status: &str, bytes: u64, total: u64| {
+        let _ = tx.send(DownloadProgress {
+            progress,
+            status: status.to_string(),
+            bytes_downloaded: bytes,
+            total_bytes: total,
+        });
+    };
+
+    // Step 1: Get the latest release from GitHub
+    send_progress(&tx, 0.05, "Obtendo informações da versão...", 0, 0);
     let releases_url = format!("https://api.github.com/repos/{}/releases/latest", RESET_CLIENT_REPO);
     let response = client.get(&releases_url)
         .header("User-Agent", "Reset-Launcher")
@@ -39,27 +49,55 @@ fn download_reset_client(config: &crate::gui::app::LauncherConfig) -> Result<(),
     let download_url = asset.get("browser_download_url").and_then(|u| u.as_str())
         .ok_or("Download URL not found".to_string())?;
 
-    // Download the binary
-    let mut response = client.get(download_url)
+    // Get asset size if available
+    let asset_size = asset.get("size").and_then(|s| s.as_u64()).unwrap_or(0);
+
+    // Step 2: Download the binary with progress
+    send_progress(&tx, 0.1, "Iniciando download do cliente...", 0, asset_size);
+    let response = client.get(download_url)
         .header("User-Agent", "Reset-Launcher")
         .send()
         .map_err(|e| format!("Failed to download binary: {}", e))?;
 
-    // Get the game directory
+    let total_size = response.content_length().unwrap_or(asset_size);
+    let mut downloaded: u64 = 0;
+    let mut bytes_buffer = Vec::new();
+
+    // Read in chunks to track progress
+    let mut stream = response;
+    let mut buffer = [0u8; 8192];
+    use std::io::Read;
+    loop {
+        let n = stream.read(&mut buffer)
+            .map_err(|e| format!("Falha ao ler stream do cliente: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        bytes_buffer.extend_from_slice(&buffer[..n]);
+        downloaded += n as u64;
+
+        // Send progress update (0.1 to 0.9 range for download)
+        if total_size > 0 {
+            let progress = 0.1 + 0.8 * (downloaded as f32 / total_size as f32);
+            send_progress(&tx, progress, "Baixando reset-client.exe...", downloaded, total_size);
+        } else {
+            send_progress(&tx, 0.5, "Baixando reset-client.exe...", downloaded, 0);
+        }
+    }
+
+    // Step 3: Save the binary
+    send_progress(&tx, 0.9, "Salvando reset-client.exe...", downloaded, total_size);
     let game_dir = config.game_dir.as_ref()
         .ok_or("Game directory not configured".to_string())?;
 
     let target_path = game_dir.join("reset-client.exe");
-
-    // Write the binary to the game directory
     let mut file = std::fs::File::create(&target_path)
         .map_err(|e| format!("Failed to create file: {}", e))?;
 
-    std::io::copy(&mut response, &mut file)
+    std::io::copy(&mut bytes_buffer.as_slice(), &mut file)
         .map_err(|e| format!("Failed to write binary: {}", e))?;
 
-    // Mark as built (we need to communicate back to the UI somehow)
-    // For now, just log success
+    send_progress(&tx, 1.0, "Download concluído!", downloaded, total_size);
     println!("Successfully downloaded reset-client.exe to {}", target_path.display());
 
     Ok(())
@@ -95,6 +133,18 @@ pub struct HomeTab {
     total_bytes: u64,
     /// Channel receiver for download progress updates
     download_receiver: Option<mpsc::Receiver<DownloadProgress>>,
+    /// Whether we're downloading reset-client
+    downloading_client: bool,
+    /// Download progress for reset-client (0.0 to 1.0)
+    client_download_progress: f32,
+    /// Download progress message for reset-client
+    client_download_status: String,
+    /// Bytes downloaded for reset-client
+    client_bytes_downloaded: u64,
+    /// Total bytes for reset-client
+    client_total_bytes: u64,
+    /// Channel receiver for client download progress updates
+    client_download_receiver: Option<mpsc::Receiver<DownloadProgress>>,
 }
 
 /// Download progress update from background thread
@@ -122,44 +172,13 @@ impl HomeTab {
             bytes_downloaded: 0,
             total_bytes: 0,
             download_receiver: None,
+            downloading_client: false,
+            client_download_progress: 0.0,
+            client_download_status: String::new(),
+            client_bytes_downloaded: 0,
+            client_total_bytes: 0,
+            client_download_receiver: None,
         }
-    }
-
-    /// Clone or update the Horizon repository
-    fn ensure_horizon_repo(&mut self, config: &crate::gui::app::LauncherConfig) -> Result<PathBuf, String> {
-        let reset_path = config.reset_path.as_ref()
-            .ok_or("Caminho do Horizon não configurado. Configure nas Configurações.".to_string())?;
-
-        let horizon_path = reset_path.join(HORIZON_REPO_DIR);
-
-        if horizon_path.join("Cargo.toml").exists() {
-            // Repo already exists, try to update
-            let output = Command::new("git")
-                .args(["pull"])
-                .current_dir(&horizon_path)
-                .output()
-                .map_err(|e| format!("Falha ao executar git pull: {}", e))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                eprintln!("Git pull warning: {}", stderr);
-            }
-        } else {
-            // Clone the repository
-            if let Some(parent) = horizon_path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| format!("Falha ao criar diretório pai: {}", e))?;
-            }
-            let output = Command::new("git")
-                .args(["clone", HORIZON_REPO_URL, HORIZON_REPO_DIR])
-                .current_dir(reset_path)
-                .output()
-                .map_err(|e| format!("Falha ao executar git clone: {}", e))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!("Falha ao clonar repositório Horizon: {}", stderr));
-            }
-        }
-
-        Ok(horizon_path)
     }
 
     /// Check if requirements are met
@@ -406,58 +425,23 @@ impl HomeTab {
             ui.label(egui::RichText::new(self.tr(config, "Reset Client (built)", "Reset Client (construído)")).size(13.0).color(WHITE));
             if !self.client_built {
                 ui.add_space(10.0);
-                if secondary_button(ui, self.tr(config, "Download Client", "Baixar Cliente"), true) {
-                    // Download pre-compiled binary from GitHub
+                if secondary_button(ui, self.tr(config, "Download Client", "Baixar Cliente"), true && !self.downloading_client && config.game_dir.is_some()) {
+                    // Download pre-compiled binary from GitHub with progress
                     let config_clone = config.clone();
+                    let (tx, rx) = mpsc::channel();
+                    self.client_download_receiver = Some(rx);
+                    self.downloading_client = true;
+                    self.client_download_progress = 0.0;
+                    self.client_download_status = "Obtendo informações da versão...".to_string();
+                    self.client_bytes_downloaded = 0;
+                    self.client_total_bytes = 0;
+                    self.server_jar_error = None;
                     std::thread::spawn(move || {
-                        let result = download_reset_client(&config_clone);
+                        let result = download_reset_client(&config_clone, tx);
                         if let Err(e) = result {
                             eprintln!("Download failed: {}", e);
                         }
                     });
-                    self.server_jar_error = Some(self.tr(config, "Downloading Reset client... Check console for progress.", "Baixando cliente Reset... Verifique o console para progresso.").to_string());
-                }
-                ui.add_space(10.0);
-                if secondary_button(ui, self.tr(config, "Build Client (fallback)", "Construir Cliente (alternativa)"), true) {
-                    // First ensure Horizon repo exists (clone if needed)
-                    let config_clone = config.clone();
-                    match self.ensure_horizon_repo(config) {
-                        Ok(horizon_path) => {
-                            // Build the client (horizon-client, then rename to reset-client)
-                            let status = Command::new("cargo")
-                                .args(["build", "--release", "-p", "horizon-client"])
-                                .current_dir(&horizon_path)
-                                .status();
-                            if status.map(|s| s.success()).unwrap_or(false) {
-                                // Check if binary was created
-                                let binary_path = horizon_path.join("target").join("release").join("horizon-client");
-                                #[cfg(windows)]
-                                let binary_path = binary_path.with_extension("exe");
-                                if binary_path.exists() {
-                                    // Copy and rename to reset-client.exe in the game directory
-                                    let game_dir = config_clone.game_dir.as_ref();
-                                    if let Some(game_dir) = game_dir {
-                                        let target_path = game_dir.join("reset-client.exe");
-                                        if let Err(e) = std::fs::copy(&binary_path, &target_path) {
-                                            self.server_jar_error = Some(format!("Failed to copy binary: {}", e));
-                                        } else {
-                                            self.client_built = true;
-                                            self.client_binary_path = Some(target_path);
-                                        }
-                                    } else {
-                                        self.server_jar_error = Some("Game directory not set".to_string());
-                                    }
-                                } else {
-                                    self.server_jar_error = Some("Build succeeded but binary not found at expected location.".to_string());
-                                }
-                            } else {
-                                self.server_jar_error = Some(self.tr(config, "Failed to build Reset client. Check if Rust and Java 25+ are installed.", "Falha ao construir o cliente Reset. Verifique se Rust e Java 25+ estão instalados.").to_string());
-                            }
-                        }
-                        Err(e) => {
-                            self.server_jar_error = Some(e);
-                        }
-                    }
                 }
             }
         });
@@ -526,6 +510,45 @@ impl HomeTab {
             }
         }
 
+        // Poll for client download progress updates from background thread
+        if self.downloading_client {
+            // Take the receiver to avoid borrow checker issues
+            if let Some(rx) = self.client_download_receiver.take() {
+                let mut still_downloading = true;
+                while let Ok(progress) = rx.try_recv() {
+                    self.client_download_progress = progress.progress;
+                    self.client_download_status = progress.status.clone();
+                    self.client_bytes_downloaded = progress.bytes_downloaded;
+                    self.client_total_bytes = progress.total_bytes;
+
+                    // Check if download completed or failed
+                    if progress.progress >= 1.0 {
+                        self.downloading_client = false;
+                        still_downloading = false;
+                        // If successful, mark client as built
+                        if progress.progress > 0.0 {
+                            if let Some(game_dir) = &config.game_dir {
+                                let client_path = game_dir.join("reset-client.exe");
+                                if client_path.exists() {
+                                    self.client_built = true;
+                                    self.client_binary_path = Some(client_path);
+                                }
+                            }
+                        }
+                    } else if progress.progress < 0.0 {
+                        // Error occurred
+                        self.downloading_client = false;
+                        still_downloading = false;
+                        self.server_jar_error = Some(progress.status);
+                    }
+                }
+                // Put the receiver back if still downloading
+                if still_downloading {
+                    self.client_download_receiver = Some(rx);
+                }
+            }
+        }
+
         // Download progress with progress bar
         if self.downloading_server || self.download_progress > 0.0 {
             ui.add_space(6.0);
@@ -551,6 +574,36 @@ impl HomeTab {
                         self.total_bytes as f64 / 1_048_576.0)
                 } else {
                     self.download_status.clone()
+                };
+                ui.label(egui::RichText::new(&status_text).size(11.0).color(ICON_COLOR));
+            });
+        }
+
+        // Client download progress with progress bar
+        if self.downloading_client || self.client_download_progress > 0.0 {
+            ui.add_space(6.0);
+
+            // Progress bar
+            let progress_percent = (self.client_download_progress * 100.0) as u32;
+            ui.add(egui::ProgressBar::new(self.client_download_progress)
+                .text(format!("{}%", progress_percent))
+                .animate(self.downloading_client)
+                .desired_width(ui.available_width()));
+
+            // Status text with bytes
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if self.downloading_client {
+                    ui.spinner();
+                    ui.add_space(6.0);
+                }
+                let status_text = if self.client_total_bytes > 0 {
+                    format!("{} - {:.1} MB / {:.1} MB",
+                        self.client_download_status,
+                        self.client_bytes_downloaded as f64 / 1_048_576.0,
+                        self.client_total_bytes as f64 / 1_048_576.0)
+                } else {
+                    self.client_download_status.clone()
                 };
                 ui.label(egui::RichText::new(&status_text).size(11.0).color(ICON_COLOR));
             });
