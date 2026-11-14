@@ -25,9 +25,9 @@ impl SettingsTab {
     }
 
     /// Open native folder picker dialog
-    fn pick_game_dir(&self) -> Option<PathBuf> {
+    fn pick_folder_dialog(&self, title: &str) -> Option<PathBuf> {
         rfd::FileDialog::new()
-            .set_title("Select Game Directory")
+            .set_title(title)
             .pick_folder()
     }
 
@@ -40,6 +40,8 @@ impl SettingsTab {
         let instance_settings = self.tr(config, "Instance Settings", "Configurações da Instância");
         let game_dir_label = self.tr(config, "Game Directory", "Diretório do Jogo");
         let game_dir_desc = self.tr(config, "Folder where Reset client and server files will be installed.", "Pasta onde o cliente e arquivos do servidor Reset serão instalados.");
+        let reset_source_label = self.tr(config, "Reset Source Path (Horizon)", "Caminho do Código Fonte do Reset (Horizon)");
+        let reset_source_desc = self.tr(config, "Path to Horizon/Reset source code (contains reset-prepare). Required for server.jar download and resource preparation.", "Caminho para o código fonte do Horizon/Reset (contém reset-prepare). Necessário para download do server.jar e preparação de recursos.");
         let browse = self.tr(config, "Browse...", "Procurar...");
         let language_label = self.tr(config, "Language", "Idioma");
         let ram_label = self.tr(config, "RAM Memory (MB)", "Memória RAM (MB)");
@@ -105,12 +107,32 @@ impl SettingsTab {
                 egui::RichText::new(&game_dir_display).size(13.0).color(WHITE)
             ));
             if ui.button(browse).clicked() {
-                if let Some(dir) = self.pick_game_dir() {
+                if let Some(dir) = self.pick_folder_dialog(&self.tr(config, "Select Game Directory", "Selecionar Diretório do Jogo")) {
                     config.game_dir = Some(dir);
                 }
             }
         });
         ui.label(egui::RichText::new(game_dir_desc).size(11.0).color(ICON_COLOR));
+        ui.add_space(12.0);
+
+        // Reset Source Path selector (required for server.jar download and resource preparation)
+        ui.horizontal(|ui| {
+            ui.add_sized([140.0, 0.0], egui::Label::new(
+                egui::RichText::new(reset_source_label).size(13.0).color(ICON_COLOR)
+            ));
+            let reset_source_display = config.reset_path.as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| self.tr(config, "Not set", "Não definido").to_string());
+            ui.add_sized([350.0, 0.0], egui::Label::new(
+                egui::RichText::new(&reset_source_display).size(13.0).color(WHITE)
+            ));
+            if ui.button(browse).clicked() {
+                if let Some(dir) = self.pick_folder_dialog(&self.tr(config, "Select Horizon/Reset source directory", "Selecionar diretório do código fonte Horizon/Reset")) {
+                    config.reset_path = Some(dir);
+                }
+            }
+        });
+        ui.label(egui::RichText::new(reset_source_desc).size(11.0).color(ICON_COLOR));
         ui.add_space(12.0);
 
         // Memory allocation

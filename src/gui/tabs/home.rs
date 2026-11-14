@@ -7,6 +7,41 @@ use crate::gui::theme::*;
 use crate::gui::tabs::{section_header, primary_button, secondary_button};
 use crate::gui::app::LaunchStatus;
 
+/// GitHub repository for Horizon/Reset source code
+const HORIZON_REPO_URL: &str = "https://github.com/horizon-rust/horizon.git";
+
+/// Clone the Horizon/Reset repository
+fn clone_horizon_repo(
+    target_dir: &std::path::Path,
+    tx: mpsc::Sender<DownloadProgress>,
+) -> Result<(), String> {
+    // Helper to send progress updates
+    let send_progress = |tx: &mpsc::Sender<DownloadProgress>, progress: f32, status: &str| {
+        let _ = tx.send(DownloadProgress {
+            progress,
+            status: status.to_string(),
+            bytes_downloaded: 0,
+            total_bytes: 0,
+        });
+    };
+
+    send_progress(&tx, 0.1, "Clonando repositório Horizon...");
+
+    // Use git clone
+    let output = Command::new("git")
+        .args(["clone", "--depth", "1", HORIZON_REPO_URL, target_dir.to_str().unwrap()])
+        .output()
+        .map_err(|e| format!("Falha ao executar git clone: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Falha ao clonar repositório: {}", stderr));
+    }
+
+    send_progress(&tx, 1.0, "Repositório Horizon clonado com sucesso!");
+    Ok(())
+}
+
 /// GitHub repository for pre-compiled reset-client binaries
 const RESET_CLIENT_REPO: &str = "reset012oficial/reset-client-binaries";
 
@@ -145,6 +180,14 @@ pub struct HomeTab {
     client_total_bytes: u64,
     /// Channel receiver for client download progress updates
     client_download_receiver: Option<mpsc::Receiver<DownloadProgress>>,
+    /// Whether we're cloning Horizon repo
+    cloning_horizon: bool,
+    /// Clone progress (0.0 to 1.0)
+    clone_progress: f32,
+    /// Clone progress message
+    clone_status: String,
+    /// Channel receiver for clone progress updates
+    clone_receiver: Option<mpsc::Receiver<DownloadProgress>>,
 }
 
 /// Download progress update from background thread
@@ -178,11 +221,15 @@ impl HomeTab {
             client_bytes_downloaded: 0,
             client_total_bytes: 0,
             client_download_receiver: None,
+            cloning_horizon: false,
+            clone_progress: 0.0,
+            clone_status: String::new(),
+            clone_receiver: None,
         }
     }
 
     /// Check if requirements are met
-    fn check_requirements(&mut self, reset_binary: &Option<PathBuf>, resources_dir: &Option<PathBuf>) {
+    fn check_requirements(&mut self, reset_binary: &Option<PathBuf>, resources_dir: &Option<PathBuf>, game_dir: &Option<PathBuf>) {
         self.checking = true;
 
         // Check Java
@@ -202,8 +249,16 @@ impl HomeTab {
             }
         }
 
-        // Check client binary
-        self.client_built = reset_binary.is_some();
+        // Check client binary - check both horizon-built binary and downloaded reset-client.exe
+        let mut client_found = reset_binary.is_some();
+        if let Some(game_dir) = game_dir {
+            let downloaded_client = game_dir.join("reset-client.exe");
+            if downloaded_client.exists() {
+                client_found = true;
+                self.client_binary_path = Some(downloaded_client);
+            }
+        }
+        self.client_built = client_found;
 
         // Check resources
         self.resources_ready = resources_dir.is_some();
@@ -396,7 +451,7 @@ impl HomeTab {
             .stroke(egui::Stroke::new(1.0_f32, SEPARATOR_COLOR))
             .rounding(egui::Rounding::same(6.0))
             .min_size(egui::Vec2::new(180.0, 36.0))).clicked() {
-                self.check_requirements(horizon_binary, resources_dir);
+                self.check_requirements(horizon_binary, resources_dir, resolved_game_dir);
             }
 
             if self.checking {
@@ -465,12 +520,35 @@ impl HomeTab {
 
         ui.horizontal(|ui| {
             // Download button for automatic server.jar download from Mojang
-            if secondary_button(ui, self.tr(config, "Download server.jar 26.3", "Baixar server.jar 26.3"), !self.downloading_server && config.reset_path.is_some()) {
+            let can_download_server = !self.downloading_server && config.reset_path.is_some();
+            if secondary_button(ui, self.tr(config, "Download server.jar 26.3", "Baixar server.jar 26.3"), can_download_server) {
                 self.download_server_jar(config);
             }
             ui.add_space(10.0);
             if let Some(path) = &self.server_jar_path {
                 ui.label(egui::RichText::new(path.display().to_string()).size(11.0).color(ICON_COLOR));
+            } else if !can_download_server && !self.downloading_server && !self.cloning_horizon {
+                // Offer to clone Horizon repo automatically
+                if secondary_button(ui, self.tr(config, "Clone Horizon Repo (auto)", "Clonar Repositório Horizon (auto)"), true) {
+                    let game_dir = resolved_game_dir.clone();
+                    let (tx, rx) = mpsc::channel();
+                    self.clone_receiver = Some(rx);
+                    self.cloning_horizon = true;
+                    self.clone_progress = 0.0;
+                    self.clone_status = "Preparando para clonar...".to_string();
+                    self.server_jar_error = None;
+                    std::thread::spawn(move || {
+                        if let Some(game_dir) = game_dir {
+                            let target_dir = game_dir.join("horizon");
+                            let result = clone_horizon_repo(&target_dir, tx);
+                            if let Err(e) = result {
+                                eprintln!("Clone failed: {}", e);
+                            }
+                        }
+                    });
+                }
+                ui.add_space(10.0);
+                ui.label(egui::RichText::new(self.tr(config, "or set Reset path in Settings", "ou configure o caminho do Reset nas Configurações")).size(11.0).color(ICON_COLOR));
             }
         });
 
@@ -551,6 +629,43 @@ impl HomeTab {
             }
         }
 
+        // Poll for clone progress updates from background thread
+        if self.cloning_horizon {
+            // Take the receiver to avoid borrow checker issues
+            if let Some(rx) = self.clone_receiver.take() {
+                let mut still_cloning = true;
+                while let Ok(progress) = rx.try_recv() {
+                    self.clone_progress = progress.progress;
+                    self.clone_status = progress.status.clone();
+
+                    // Check if clone completed or failed
+                    if progress.progress >= 1.0 {
+                        self.cloning_horizon = false;
+                        still_cloning = false;
+                        // If successful, update config with the cloned path
+                        if progress.progress > 0.0 {
+                            if let Some(game_dir) = resolved_game_dir {
+                                let cloned_path = game_dir.join("horizon");
+                                if cloned_path.exists() {
+                                    config.reset_path = Some(cloned_path);
+                                    self.server_jar_path = None; // Reset so download button can appear
+                                }
+                            }
+                        }
+                    } else if progress.progress < 0.0 {
+                        // Error occurred
+                        self.cloning_horizon = false;
+                        still_cloning = false;
+                        self.server_jar_error = Some(progress.status);
+                    }
+                }
+                // Put the receiver back if still cloning
+                if still_cloning {
+                    self.clone_receiver = Some(rx);
+                }
+            }
+        }
+
         // Download progress with progress bar
         if self.downloading_server || self.download_progress > 0.0 {
             ui.add_space(6.0);
@@ -608,6 +723,28 @@ impl HomeTab {
                     self.client_download_status.clone()
                 };
                 ui.label(egui::RichText::new(&status_text).size(11.0).color(ICON_COLOR));
+            });
+        }
+
+        // Clone progress with progress bar
+        if self.cloning_horizon || self.clone_progress > 0.0 {
+            ui.add_space(6.0);
+
+            // Progress bar
+            let progress_percent = (self.clone_progress * 100.0) as u32;
+            ui.add(egui::ProgressBar::new(self.clone_progress)
+                .text(format!("{}%", progress_percent))
+                .animate(self.cloning_horizon)
+                .desired_width(ui.available_width()));
+
+            // Status text
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if self.cloning_horizon {
+                    ui.spinner();
+                    ui.add_space(6.0);
+                }
+                ui.label(egui::RichText::new(&self.clone_status).size(11.0).color(ICON_COLOR));
             });
         }
 
