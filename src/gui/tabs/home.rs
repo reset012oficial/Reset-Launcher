@@ -425,7 +425,9 @@ impl HomeTab {
             ui.label(egui::RichText::new(self.tr(config, "Reset Client (built)", "Reset Client (construído)")).size(13.0).color(WHITE));
             if !self.client_built {
                 ui.add_space(10.0);
-                if secondary_button(ui, self.tr(config, "Download Client", "Baixar Cliente"), true && !self.downloading_client && config.game_dir.is_some()) {
+                // Button enabled if not downloading (game directory defaults to launcher folder)
+                let can_download = !self.downloading_client;
+                if secondary_button(ui, self.tr(config, "Download Client", "Baixar Cliente"), can_download) {
                     // Download pre-compiled binary from GitHub with progress
                     let config_clone = config.clone();
                     let (tx, rx) = mpsc::channel();
@@ -527,7 +529,7 @@ impl HomeTab {
                         still_downloading = false;
                         // If successful, mark client as built
                         if progress.progress > 0.0 {
-                            if let Some(game_dir) = &config.game_dir {
+                            if let Some(game_dir) = resolved_game_dir {
                                 let client_path = game_dir.join("reset-client.exe");
                                 if client_path.exists() {
                                     self.client_built = true;

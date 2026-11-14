@@ -1,6 +1,7 @@
 use eframe::egui;
 use crate::gui::theme::*;
 use crate::gui::tabs::{section_header, labeled_input, labeled_number_input, labeled_checkbox};
+use std::path::PathBuf;
 
 /// Settings tab - instance settings (memory, window size, fullscreen), language, and credits
 pub struct SettingsTab {
@@ -23,6 +24,13 @@ impl SettingsTab {
         if config.language == "en" { en } else { pt }
     }
 
+    /// Open native folder picker dialog
+    fn pick_game_dir(&self) -> Option<PathBuf> {
+        rfd::FileDialog::new()
+            .set_title("Select Game Directory")
+            .pick_folder()
+    }
+
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -30,6 +38,9 @@ impl SettingsTab {
     ) {
         // Pre-compute all translated strings to avoid borrow issues
         let instance_settings = self.tr(config, "Instance Settings", "Configurações da Instância");
+        let game_dir_label = self.tr(config, "Game Directory", "Diretório do Jogo");
+        let game_dir_desc = self.tr(config, "Folder where Reset client and server files will be installed.", "Pasta onde o cliente e arquivos do servidor Reset serão instalados.");
+        let browse = self.tr(config, "Browse...", "Procurar...");
         let language_label = self.tr(config, "Language", "Idioma");
         let ram_label = self.tr(config, "RAM Memory (MB)", "Memória RAM (MB)");
         let ram_desc = self.tr(config, "Memory allocated for Reset. Recommended: 4096 MB or more.", "Memória alocada para o Reset. Recomendado: 4096 MB ou mais.");
@@ -80,6 +91,26 @@ impl SettingsTab {
                     ui.selectable_value(&mut config.language, "pt".to_string(), "Português");
                 });
         });
+        ui.add_space(12.0);
+
+        // Game directory selector
+        ui.horizontal(|ui| {
+            ui.add_sized([140.0, 0.0], egui::Label::new(
+                egui::RichText::new(game_dir_label).size(13.0).color(ICON_COLOR)
+            ));
+            let game_dir_display = config.game_dir.as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| self.tr(config, "Not set", "Não definido").to_string());
+            ui.add_sized([350.0, 0.0], egui::Label::new(
+                egui::RichText::new(&game_dir_display).size(13.0).color(WHITE)
+            ));
+            if ui.button(browse).clicked() {
+                if let Some(dir) = self.pick_game_dir() {
+                    config.game_dir = Some(dir);
+                }
+            }
+        });
+        ui.label(egui::RichText::new(game_dir_desc).size(11.0).color(ICON_COLOR));
         ui.add_space(12.0);
 
         // Memory allocation

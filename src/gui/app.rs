@@ -246,17 +246,12 @@ impl ResetLauncherApp {
             }
         };
 
-        // Game directory
+        // Game directory - default to launcher's directory (portable mode)
         let game_dir = config.game_dir.clone().or_else(|| {
-            // Use standard directories matching README.md:
-            // Windows: %APPDATA%\reset-offline\
-            // Linux: ~/.local/share/reset-offline/
-            // macOS: ~/Library/Application Support/reset-offline/
-            if let Some(proj_dirs) = ProjectDirs::from("", "reset", "reset-offline") {
-                Some(proj_dirs.data_dir().to_path_buf())
-            } else {
-                Some(PathBuf::from(".").join("reset-offline"))
-            }
+            // Default to the launcher's executable directory for portable mode
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         });
 
         let resolved_game_dir = game_dir.map(|p| {
