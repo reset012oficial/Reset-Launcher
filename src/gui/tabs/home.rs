@@ -11,6 +11,60 @@ use crate::gui::app::LaunchStatus;
 const HORIZON_REPO_URL: &str = "https://github.com/horizon-rust/horizon.git";
 const HORIZON_REPO_DIR: &str = "horizon";
 
+/// GitHub repository for pre-compiled reset-client binaries
+const RESET_CLIENT_REPO: &str = "reset012oficial/reset-client-binaries";
+
+/// Download the pre-compiled reset-client binary from GitHub releases
+fn download_reset_client(config: &crate::gui::app::LauncherConfig) -> Result<(), String> {
+    let client = reqwest::blocking::Client::new();
+
+    // Get the latest release from GitHub
+    let releases_url = format!("https://api.github.com/repos/{}/releases/latest", RESET_CLIENT_REPO);
+    let response = client.get(&releases_url)
+        .header("User-Agent", "Reset-Launcher")
+        .send()
+        .map_err(|e| format!("Failed to fetch release info: {}", e))?;
+
+    let release: serde_json::Value = response.json()
+        .map_err(|e| format!("Failed to parse release JSON: {}", e))?;
+
+    // Find the windows asset (reset-client.exe)
+    let assets = release.get("assets").and_then(|a| a.as_array())
+        .ok_or("No assets found in release".to_string())?;
+
+    let asset = assets.iter()
+        .find(|a| a.get("name").and_then(|n| n.as_str()) == Some("reset-client.exe"))
+        .ok_or("reset-client.exe not found in release assets".to_string())?;
+
+    let download_url = asset.get("browser_download_url").and_then(|u| u.as_str())
+        .ok_or("Download URL not found".to_string())?;
+
+    // Download the binary
+    let mut response = client.get(download_url)
+        .header("User-Agent", "Reset-Launcher")
+        .send()
+        .map_err(|e| format!("Failed to download binary: {}", e))?;
+
+    // Get the game directory
+    let game_dir = config.game_dir.as_ref()
+        .ok_or("Game directory not configured".to_string())?;
+
+    let target_path = game_dir.join("reset-client.exe");
+
+    // Write the binary to the game directory
+    let mut file = std::fs::File::create(&target_path)
+        .map_err(|e| format!("Failed to create file: {}", e))?;
+
+    std::io::copy(&mut response, &mut file)
+        .map_err(|e| format!("Failed to write binary: {}", e))?;
+
+    // Mark as built (we need to communicate back to the UI somehow)
+    // For now, just log success
+    println!("Successfully downloaded reset-client.exe to {}", target_path.display());
+
+    Ok(())
+}
+
 /// Home tab - shows requirements check, server.jar download, and play button
 pub struct HomeTab {
     /// Whether we're checking requirements
@@ -352,23 +406,47 @@ impl HomeTab {
             ui.label(egui::RichText::new(self.tr(config, "Reset Client (built)", "Reset Client (construído)")).size(13.0).color(WHITE));
             if !self.client_built {
                 ui.add_space(10.0);
-                if secondary_button(ui, self.tr(config, "Build Client", "Construir Cliente"), true) {
+                if secondary_button(ui, self.tr(config, "Download Client", "Baixar Cliente"), true) {
+                    // Download pre-compiled binary from GitHub
+                    let config_clone = config.clone();
+                    std::thread::spawn(move || {
+                        let result = download_reset_client(&config_clone);
+                        if let Err(e) = result {
+                            eprintln!("Download failed: {}", e);
+                        }
+                    });
+                    self.server_jar_error = Some(self.tr(config, "Downloading Reset client... Check console for progress.", "Baixando cliente Reset... Verifique o console para progresso.").to_string());
+                }
+                ui.add_space(10.0);
+                if secondary_button(ui, self.tr(config, "Build Client (fallback)", "Construir Cliente (alternativa)"), true) {
                     // First ensure Horizon repo exists (clone if needed)
+                    let config_clone = config.clone();
                     match self.ensure_horizon_repo(config) {
                         Ok(horizon_path) => {
-                            // Build the client
+                            // Build the client (horizon-client, then rename to reset-client)
                             let status = Command::new("cargo")
-                                .args(["build", "--release", "-p", "reset-client"])
+                                .args(["build", "--release", "-p", "horizon-client"])
                                 .current_dir(&horizon_path)
                                 .status();
                             if status.map(|s| s.success()).unwrap_or(false) {
                                 // Check if binary was created
-                                let binary_path = horizon_path.join("target").join("release").join("reset-client");
+                                let binary_path = horizon_path.join("target").join("release").join("horizon-client");
                                 #[cfg(windows)]
                                 let binary_path = binary_path.with_extension("exe");
                                 if binary_path.exists() {
-                                    self.client_built = true;
-                                    self.client_binary_path = Some(binary_path);
+                                    // Copy and rename to reset-client.exe in the game directory
+                                    let game_dir = config_clone.game_dir.as_ref();
+                                    if let Some(game_dir) = game_dir {
+                                        let target_path = game_dir.join("reset-client.exe");
+                                        if let Err(e) = std::fs::copy(&binary_path, &target_path) {
+                                            self.server_jar_error = Some(format!("Failed to copy binary: {}", e));
+                                        } else {
+                                            self.client_built = true;
+                                            self.client_binary_path = Some(target_path);
+                                        }
+                                    } else {
+                                        self.server_jar_error = Some("Game directory not set".to_string());
+                                    }
                                 } else {
                                     self.server_jar_error = Some("Build succeeded but binary not found at expected location.".to_string());
                                 }
