@@ -560,13 +560,53 @@ impl HomeTab {
     fn prepare_resources(&mut self, config: &crate::gui::app::LauncherConfig, server_jar: &std::path::Path, game_dir: &Option<PathBuf>) {
         let server_jar_str = server_jar.to_str().unwrap_or("");
 
+        // Common subcommand names for preparing resources
+        let prepare_subcommands = [
+            "prepare",
+            "prepare-resources",
+            "prepare-assets",
+            "gen-assets",
+            "assets",
+            "setup",
+            "init",
+        ];
+
         // First, try using the pre-compiled reset-client.exe binary if available
         if let Some(game_dir) = game_dir {
             let client_binary = game_dir.join("reset-client.exe");
             if client_binary.exists() {
-                // Try using the downloaded binary with prepare subcommand
-                let status = Command::new(&client_binary)
-                    .args(["prepare", "--server-jar", server_jar_str])
+                // Try multiple subcommand names
+                for subcmd in &prepare_subcommands {
+                    let status = Command::new(&client_binary)
+                        .args([subcmd, "--server-jar", server_jar_str])
+                        .current_dir(game_dir)
+                        .status();
+
+                    if status.map(|s| s.success()).unwrap_or(false) {
+                        self.resources_ready = true;
+                        return;
+                    }
+                }
+                // Also try without --server-jar flag (some binaries auto-detect)
+                for subcmd in &prepare_subcommands {
+                    let status = Command::new(&client_binary)
+                        .args([subcmd])
+                        .current_dir(game_dir)
+                        .status();
+
+                    if status.map(|s| s.success()).unwrap_or(false) {
+                        self.resources_ready = true;
+                        return;
+                    }
+                }
+                // If that fails, continue to try source build
+            }
+
+            // Also check for a separate reset-prepare.exe binary
+            let prepare_binary = game_dir.join("reset-prepare.exe");
+            if prepare_binary.exists() {
+                let status = Command::new(&prepare_binary)
+                    .args(["--server-jar", server_jar_str])
                     .current_dir(game_dir)
                     .status();
 
@@ -574,7 +614,6 @@ impl HomeTab {
                     self.resources_ready = true;
                     return;
                 }
-                // If that fails, continue to try source build
             }
         }
 
@@ -597,7 +636,11 @@ impl HomeTab {
                     return;
                 }
             } else {
-                self.server_jar_error = Some("reset-prepare não encontrado no código fonte. Tente usar o binário baixado (Download Client) ou verifique o caminho do Reset nas configurações.".to_string());
+                self.server_jar_error = Some(
+                    "reset-prepare não encontrado no código fonte. ".to_string()
+                    + "O binário baixado (reset-client.exe) não possui subcomando de preparação conhecido (prepare, prepare-resources, prepare-assets, gen-assets, assets, setup, init). "
+                    + "Verifique se há um reset-prepare.exe separado ou configure o caminho do código fonte correto nas Configurações."
+                );
                 return;
             }
         }
