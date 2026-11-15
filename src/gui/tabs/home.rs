@@ -621,6 +621,16 @@ impl HomeTab {
         launch_error: &mut Option<String>,
         launch_game: impl FnOnce(),
     ) {
+        // Auto-detect and set reset_path if horizon exists in game directory
+        if config.reset_path.is_none() {
+            if let Some(game_dir) = resolved_game_dir {
+                let horizon_path = game_dir.join("horizon");
+                if horizon_path.exists() {
+                    config.reset_path = Some(horizon_path);
+                }
+            }
+        }
+
         // Requirements section
         section_header(ui, self.tr(config, "System Requirements", "Requisitos do Sistema"));
 
