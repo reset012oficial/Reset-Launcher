@@ -79,7 +79,7 @@ fn update_horizon_repo(
 
     send_progress(&tx, 0.1, "Configurando Git para transferências grandes...");
 
-    // Fetch latest changes - try shallow first, then full if needed
+    // Fetch latest changes
     send_progress(&tx, 0.2, "Buscando atualizações...");
     let output = Command::new("git")
         .args(["fetch", "origin"])
@@ -96,6 +96,22 @@ fn update_horizon_repo(
         let err = format!("Falha ao buscar atualizações: {}", stderr);
         send_progress(&tx, -1.0, &err);
         return Err(err);
+    }
+
+    // Check for unmerged files (conflicts) and reset if needed
+    let status_output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(target_dir)
+        .output();
+    if let Ok(output) = status_output {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.lines().any(|line| line.starts_with("UU") || line.starts_with("UD") || line.starts_with("DU") || line.starts_with("AA")) {
+            send_progress(&tx, 0.4, "Resolvendo conflitos (reset hard)...");
+            let _ = Command::new("git")
+                .args(["reset", "--hard", "HEAD"])
+                .current_dir(target_dir)
+                .output();
+        }
     }
 
     send_progress(&tx, 0.5, "Atualizando repositório...");
@@ -119,6 +135,33 @@ fn update_horizon_repo(
             send_progress(&tx, 0.7, "Tentando pull com --allow-unrelated-histories...");
             let output = Command::new("git")
                 .args(["pull", "origin", "main", "--allow-unrelated-histories"])
+                .current_dir(target_dir)
+                .output()
+                .map_err(|e| {
+                    let err = format!("Falha ao executar git pull: {}", e);
+                    send_progress(&tx, -1.0, &err);
+                    err
+                })?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let err = format!("Falha ao atualizar repositório: {}", stderr);
+                send_progress(&tx, -1.0, &err);
+                return Err(err);
+            }
+        } else if stderr.contains("unmerged files") || stderr.contains("arquivos não mesclados") {
+            // Try to resolve by resetting and pulling again
+            send_progress(&tx, 0.7, "Resolvendo conflitos e tentando novamente...");
+            let _ = Command::new("git")
+                .args(["reset", "--hard", "HEAD"])
+                .current_dir(target_dir)
+                .output();
+            let _ = Command::new("git")
+                .args(["clean", "-fd"])
+                .current_dir(target_dir)
+                .output();
+            let output = Command::new("git")
+                .args(["pull", "origin", "main"])
                 .current_dir(target_dir)
                 .output()
                 .map_err(|e| {
