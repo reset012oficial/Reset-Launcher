@@ -79,10 +79,10 @@ fn update_horizon_repo(
 
     send_progress(&tx, 0.1, "Configurando Git para transferências grandes...");
 
-    // Fetch latest changes with shallow depth to avoid large transfers
-    send_progress(&tx, 0.2, "Buscando atualizações (shallow)...");
+    // Fetch latest changes - try shallow first, then full if needed
+    send_progress(&tx, 0.2, "Buscando atualizações...");
     let output = Command::new("git")
-        .args(["fetch", "origin", "--depth=1"])
+        .args(["fetch", "origin"])
         .current_dir(target_dir)
         .output()
         .map_err(|e| {
@@ -93,29 +93,14 @@ fn update_horizon_repo(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // Try without shallow if it fails
-        send_progress(&tx, 0.3, "Tentando fetch completo...");
-        let output = Command::new("git")
-            .args(["fetch", "origin"])
-            .current_dir(target_dir)
-            .output()
-            .map_err(|e| {
-                let err = format!("Falha ao executar git fetch: {}", e);
-                send_progress(&tx, -1.0, &err);
-                err
-            })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let err = format!("Falha ao buscar atualizações: {}", stderr);
-            send_progress(&tx, -1.0, &err);
-            return Err(err);
-        }
+        let err = format!("Falha ao buscar atualizações: {}", stderr);
+        send_progress(&tx, -1.0, &err);
+        return Err(err);
     }
 
     send_progress(&tx, 0.5, "Atualizando repositório...");
 
-    // Pull latest changes
+    // Pull latest changes - try normal pull first
     let output = Command::new("git")
         .args(["pull", "origin", "main"])
         .current_dir(target_dir)
@@ -128,9 +113,31 @@ fn update_horizon_repo(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let err = format!("Falha ao atualizar repositório: {}", stderr);
-        send_progress(&tx, -1.0, &err);
-        return Err(err);
+        // Check if it's the "unrelated histories" error from shallow clone
+        if stderr.contains("unrelated histories") || stderr.contains("histórias não relacionadas") {
+            // Try with --allow-unrelated-histories
+            send_progress(&tx, 0.7, "Tentando pull com --allow-unrelated-histories...");
+            let output = Command::new("git")
+                .args(["pull", "origin", "main", "--allow-unrelated-histories"])
+                .current_dir(target_dir)
+                .output()
+                .map_err(|e| {
+                    let err = format!("Falha ao executar git pull: {}", e);
+                    send_progress(&tx, -1.0, &err);
+                    err
+                })?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let err = format!("Falha ao atualizar repositório: {}", stderr);
+                send_progress(&tx, -1.0, &err);
+                return Err(err);
+            }
+        } else {
+            let err = format!("Falha ao atualizar repositório: {}", stderr);
+            send_progress(&tx, -1.0, &err);
+            return Err(err);
+        }
     }
 
     send_progress(&tx, 1.0, "Repositório Horizon atualizado com sucesso!");
