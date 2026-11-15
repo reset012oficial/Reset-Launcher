@@ -506,29 +506,53 @@ impl HomeTab {
         });
     }
 
-    /// Prepare resources using reset-prepare
-    fn prepare_resources(&mut self, config: &crate::gui::app::LauncherConfig, server_jar: &std::path::Path) {
+    /// Prepare resources using reset-client binary (pre-compiled) or reset-prepare (from source)
+    fn prepare_resources(&mut self, config: &crate::gui::app::LauncherConfig, server_jar: &std::path::Path, game_dir: &Option<PathBuf>) {
+        let server_jar_str = server_jar.to_str().unwrap_or("");
+
+        // First, try using the pre-compiled reset-client.exe binary if available
+        if let Some(game_dir) = game_dir {
+            let client_binary = game_dir.join("reset-client.exe");
+            if client_binary.exists() {
+                // Try using the downloaded binary with prepare subcommand
+                let status = Command::new(&client_binary)
+                    .args(["prepare", "--server-jar", server_jar_str])
+                    .current_dir(game_dir)
+                    .status();
+
+                if status.map(|s| s.success()).unwrap_or(false) {
+                    self.resources_ready = true;
+                    return;
+                }
+                // If that fails, continue to try source build
+            }
+        }
+
+        // Fallback: try building from source (Horizon repo)
         if let Some(reset_path) = &config.reset_path {
             let prepare_path = reset_path.join("crates").join("reset-prepare");
             if prepare_path.exists() {
                 let status = Command::new("cargo")
                     .args([
                         "run", "--release", "-p", "reset-prepare", "--",
-                        "--prepare", "--server-jar", server_jar.to_str().unwrap()
+                        "--prepare", "--server-jar", server_jar_str
                     ])
                     .current_dir(reset_path)
                     .status();
                 if status.map(|s| s.success()).unwrap_or(false) {
                     self.resources_ready = true;
+                    return;
                 } else {
                     self.server_jar_error = Some("Falha ao preparar recursos. Verifique se o server.jar é válido (versão 26.3).".to_string());
+                    return;
                 }
             } else {
-                self.server_jar_error = Some("reset-prepare não encontrado. Verifique o caminho do Reset nas configurações.".to_string());
+                self.server_jar_error = Some("reset-prepare não encontrado no código fonte. Tente usar o binário baixado (Download Client) ou verifique o caminho do Reset nas configurações.".to_string());
+                return;
             }
-        } else {
-            self.server_jar_error = Some("Caminho do Reset não configurado. Configure nas Configurações.".to_string());
         }
+
+        self.server_jar_error = Some("Nenhum cliente Reset disponível. Baixe o cliente (Download Client) ou configure o caminho do código fonte nas Configurações.".to_string());
     }
 
     /// Get translated text based on config language
@@ -953,7 +977,7 @@ impl HomeTab {
             ui.add_space(10.0);
             if primary_button(ui, self.tr(config, "Prepare Resources with server.jar", "Preparar Recursos com server.jar"), true) {
                 if let Some(server_jar) = self.server_jar_path.clone() {
-                    self.prepare_resources(config, &server_jar);
+                    self.prepare_resources(config, &server_jar, resolved_game_dir);
                 }
             }
         }
