@@ -63,11 +63,26 @@ fn update_horizon_repo(
         });
     };
 
-    send_progress(&tx, 0.1, "Verificando atualizações...");
+    // Configure Git for large transfers (fixes SSL buffer issues on Windows)
+    let _ = Command::new("git")
+        .args(["config", "http.postBuffer", "524288000"]) // 500MB
+        .current_dir(target_dir)
+        .output();
+    let _ = Command::new("git")
+        .args(["config", "http.lowSpeedLimit", "0"])
+        .current_dir(target_dir)
+        .output();
+    let _ = Command::new("git")
+        .args(["config", "http.lowSpeedTime", "999999"])
+        .current_dir(target_dir)
+        .output();
 
-    // Fetch latest changes
+    send_progress(&tx, 0.1, "Configurando Git para transferências grandes...");
+
+    // Fetch latest changes with shallow depth to avoid large transfers
+    send_progress(&tx, 0.2, "Buscando atualizações (shallow)...");
     let output = Command::new("git")
-        .args(["fetch", "origin"])
+        .args(["fetch", "origin", "--depth=1"])
         .current_dir(target_dir)
         .output()
         .map_err(|e| {
@@ -78,9 +93,24 @@ fn update_horizon_repo(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let err = format!("Falha ao buscar atualizações: {}", stderr);
-        send_progress(&tx, -1.0, &err);
-        return Err(err);
+        // Try without shallow if it fails
+        send_progress(&tx, 0.3, "Tentando fetch completo...");
+        let output = Command::new("git")
+            .args(["fetch", "origin"])
+            .current_dir(target_dir)
+            .output()
+            .map_err(|e| {
+                let err = format!("Falha ao executar git fetch: {}", e);
+                send_progress(&tx, -1.0, &err);
+                err
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let err = format!("Falha ao buscar atualizações: {}", stderr);
+            send_progress(&tx, -1.0, &err);
+            return Err(err);
+        }
     }
 
     send_progress(&tx, 0.5, "Atualizando repositório...");
