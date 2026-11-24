@@ -2,7 +2,7 @@
 
 
 # Reset-Launcher
-Um launcher de Minecraft Java (Minecraft reescrito em Rust) 100% brasileiro e feito por um desenvolvedor solo.
+Um launcher de Minecraft Java (Minecraft reescrito em Rust), brasileiro e feito por um desenvolvedor solo.
 
 O Reset Launcher foi pensado como uma forma alternativa ao Horizon Launcher, apresentando diferentes funcionalidades (como o modo offline) e sendo leve e compatível com diversas versões do Windows (foi testado do Windows 10 ao 7). O launcher utiliza parte do código do Horizon Launcher para rodar o Minecraft reescrito em Rust.
 
